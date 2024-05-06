@@ -22,39 +22,46 @@ __global__ void findNonce(BYTE* prev_block_hash, BYTE* top_hash, BYTE* block_has
 	// Check if nonce has been found
 	if (ok[0] == 1) return;
 
-	// Calculate nonce
-	uint64_t nonce = blockIdx.x * blockDim.x + threadIdx.x + 1;
+	// Calculate start_id
+	uint64_t start_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-	// Check if nonce is valid
-    if (nonce > MAX_NONCE) return;
+	// Check if start_id is valid
+    if (start_id > MAX_NONCE) return;
 
-	// Initialize block content
-    BYTE block_content[BLOCK_SIZE];
-    d_strcpy((char*)block_content, (const char*)prev_block_hash);
-    d_strcat((char*)block_content, (const char*)top_hash);
+	// Initialize jump
+	uint64_t jump = gridDim.x * blockDim.x;
 
-    char nonce_string[NONCE_SIZE];
-    intToString(nonce, nonce_string);
-    d_strcat((char*)block_content, nonce_string);
+	for (uint64_t nonce = start_id; nonce <= MAX_NONCE; nonce += jump) {
+		// Check if nonce has been found
+		if (ok[0] == 1) return;
 
-	// Calculate hash
-    BYTE temp_hash[SHA256_HASH_SIZE];
-    apply_sha256(block_content, d_strlen((const char*)block_content), temp_hash, 1);
+		// Initialize block content
+		BYTE block_content[BLOCK_SIZE];
+		d_strcpy((char*)block_content, (const char*)prev_block_hash);
+		d_strcat((char*)block_content, (const char*)top_hash);
 
+		char nonce_string[NONCE_SIZE];
+		intToString(nonce, nonce_string);
+		d_strcat((char*)block_content, nonce_string);
 
-	// Check if hash is valid
-    if (compare_hashes(temp_hash, difficulty) <= 0) {
-		// Using lock to prevent
-		// multiple threads from writing to the same memory location
-        atomicExch((unsigned long long*)found_nonce, (unsigned long long)nonce);
+		// Calculate hash
+		BYTE temp_hash[SHA256_HASH_SIZE];
+		apply_sha256(block_content, d_strlen((const char*)block_content), temp_hash, 1);
 
-		// Set ok to 1 to stop other threads
-		// once nonce has been found
-		ok[0] = 1;
+		// Check if hash is valid
+		if (compare_hashes(temp_hash, difficulty) <= 0) {
+			// Using lock to prevent
+			// multiple threads from writing to the same memory location
+			atomicExch((unsigned long long*)found_nonce, (unsigned long long)nonce);
 
-		// Copy hash to block_hash
-        d_strcpy((char*)block_hash, (const char*)temp_hash);
-    }
+			// Set ok to 1 to stop other threads
+			// once nonce has been found
+			atomicExch((unsigned long long*)ok, 1);
+
+			// Copy hash to block_hash
+			d_strcpy((char*)block_hash, (const char*)temp_hash);
+		}
+	}
 }
 
 int main(int argc, char **argv) {
