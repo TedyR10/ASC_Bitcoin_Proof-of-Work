@@ -22,45 +22,38 @@ __global__ void findNonce(BYTE* prev_block_hash, BYTE* top_hash, BYTE* block_has
 	// Check if nonce has been found
 	if (ok[0] == 1) return;
 
-	// Calculate start_id
-	uint64_t start_id = blockIdx.x * blockDim.x + threadIdx.x;
+	// Calculate nonce
+	uint64_t nonce = blockIdx.x * blockDim.x + threadIdx.x;
 
-	// Check if start_id is valid
-    if (start_id > MAX_NONCE) return;
+	// Check if nonce is valid
+    if (nonce > MAX_NONCE) return;
 
-	// Initialize jump
-	uint64_t jump = gridDim.x * blockDim.x;
+	// Initialize block content
+	BYTE block_content[BLOCK_SIZE];
+	d_strcpy((char*)block_content, (const char*)prev_block_hash);
+	d_strcat((char*)block_content, (const char*)top_hash);
 
-	for (uint64_t nonce = start_id; nonce <= MAX_NONCE; nonce += jump) {
-		// Check if nonce has been found
-		if (ok[0] == 1) return;
+	// Add nonce to block content
+	char nonce_string[NONCE_SIZE];
+	intToString(nonce, nonce_string);
+	d_strcat((char*)block_content, nonce_string);
 
-		// Initialize block content
-		BYTE block_content[BLOCK_SIZE];
-		d_strcpy((char*)block_content, (const char*)prev_block_hash);
-		d_strcat((char*)block_content, (const char*)top_hash);
+	// Calculate hash
+	BYTE temp_hash[SHA256_HASH_SIZE];
+	apply_sha256(block_content, d_strlen((const char*)block_content), temp_hash, 1);
 
-		char nonce_string[NONCE_SIZE];
-		intToString(nonce, nonce_string);
-		d_strcat((char*)block_content, nonce_string);
+	// Check if hash is valid
+	if (compare_hashes(temp_hash, difficulty) <= 0) {
+		// Using thread-safe operations to prevent
+		// multiple threads from writing to the same memory location
+		atomicExch((unsigned long long*)found_nonce, (unsigned long long)nonce);
 
-		// Calculate hash
-		BYTE temp_hash[SHA256_HASH_SIZE];
-		apply_sha256(block_content, d_strlen((const char*)block_content), temp_hash, 1);
+		// Set ok to 1 to stop other threads
+		// once nonce has been found
+		atomicExch((unsigned long long*)ok, 1);
 
-		// Check if hash is valid
-		if (compare_hashes(temp_hash, difficulty) <= 0) {
-			// Using lock to prevent
-			// multiple threads from writing to the same memory location
-			atomicExch((unsigned long long*)found_nonce, (unsigned long long)nonce);
-
-			// Set ok to 1 to stop other threads
-			// once nonce has been found
-			atomicExch((unsigned long long*)ok, 1);
-
-			// Copy hash to block_hash
-			d_strcpy((char*)block_hash, (const char*)temp_hash);
-		}
+		// Copy hash to block_hash
+		d_strcpy((char*)block_hash, (const char*)temp_hash);
 	}
 }
 
@@ -106,11 +99,11 @@ int main(int argc, char **argv) {
     cudaMemcpy(d_difficulty, difficulty_5_zeros, SHA256_HASH_SIZE, cudaMemcpyHostToDevice);
     cudaMemcpy(d_found_nonce, &found_nonce, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-	// Initialize block and threads
-    int blockSize = 256;
-    int numBlocks = (MAX_NONCE / blockSize) + 1;
+	// Initialize number of threads per block and number of blocks
+    int threads = 256;
+    int num_Blocks = (MAX_NONCE / threads) + 1;
 
-	// Initialize the ok flag
+	// Initialize the flag used to stop the threads once the nonce has been found
 	int ok[1] = {0};
 	uint64_t *d_ok;
 	cudaMalloc(&d_ok, sizeof(uint64_t));
@@ -119,7 +112,7 @@ int main(int argc, char **argv) {
 	cudaEvent_t start, stop;
     startTiming(&start, &stop);
     
-    findNonce<<<numBlocks, blockSize>>>(d_prev_block_hash, d_top_hash, d_block_hash, d_difficulty, d_found_nonce, d_ok);
+    findNonce<<<num_Blocks, threads>>>(d_prev_block_hash, d_top_hash, d_block_hash, d_difficulty, d_found_nonce, d_ok);
 
     cudaDeviceSynchronize();
 
